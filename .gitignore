@@ -1,0 +1,14 @@
+# Generated reports (the scanner writes these by default)
+ai_readiness_report.html
+ai_readiness_report.csv
+*_report.html
+*_report.csv
+report-*.html
+report-*.csv
+
+# OS / editor
+.DS_Store
+*.swp
+
+# Local tool settings
+.claude/
