@@ -513,44 +513,117 @@ function write_csv(string $path, array $rows): void
 function write_html(string $path, string $url, int $score, array $rows): void
 {
     $host = htmlspecialchars(parse_url($url, PHP_URL_HOST) ?: $url);
-    $color = $score >= 75 ? '#1F9D5B' : ($score >= 50 ? '#E3A11F' : '#D64541');
+    $scoreColor = $score >= 75 ? 'var(--good)' : ($score >= 50 ? 'var(--warn)' : 'var(--bad)');
+    $gradeWord = $score >= 90 ? 'Excellent' : ($score >= 75 ? 'Good' : ($score >= 50 ? 'Needs work' : 'At risk'));
     $tbody = '';
     foreach ($rows as $r) {
-        $mark = $r['pass'] ? '<span style="color:#1F9D5B">✔ Pass</span>' : '<span style="color:#E3A11F">⚠ Improve</span>';
-        $tbody .= '<tr><td>'.htmlspecialchars($r['label']).'</td><td style="text-align:center">'.$mark
-            .'</td><td style="text-align:right;white-space:nowrap">'.$r['score'].' / '.$r['max']
-            .'</td><td style="color:#94A3B8">'.htmlspecialchars($r['detail']).'</td></tr>';
+        $mark = $r['pass']
+            ? '<span class="ok">✔ Pass</span>'
+            : '<span class="warn">⚠ Improve</span>';
+        $tbody .= '<tr><td class="signal">'.htmlspecialchars($r['label']).'</td>'
+            .'<td class="result">'.$mark.'</td>'
+            .'<td class="pts">'.$r['score'].' / '.$r['max'].'</td>'
+            .'<td class="detail">'.htmlspecialchars($r['detail']).'</td></tr>';
     }
     $generated = gmdate('Y-m-d H:i').' UTC';
     $ver = VERSION;
     $html = <<<HTML
-    <!doctype html><html lang="en"><head><meta charset="utf-8">
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AI-Readiness — {$host}</title>
+    <title>AI-Readiness Report — {$host}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-      :root { color-scheme: dark; }
-      body { font: 15px/1.55 -apple-system, system-ui, sans-serif; margin: 0;
-        background: #0F1E33; color: #E6EAF1; }
-      .wrap { max-width: 860px; margin: 0 auto; padding: 40px 22px; }
-      h1 { font-size: 24px; margin: 0 0 4px; }
-      .sub { color: #94A3B8; margin: 0 0 28px; }
-      .score { display: flex; align-items: baseline; gap: 10px; margin-bottom: 26px; }
-      .score b { font-size: 56px; color: {$color}; line-height: 1; }
-      .score span { color: #94A3B8; }
-      table { border-collapse: collapse; width: 100%; font-size: 14px;
-        background: #17263d; border-radius: 12px; overflow: hidden; }
-      th, td { text-align: left; padding: 11px 14px; border-top: 1px solid #22344f; }
-      th { background: #1c2d47; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #94A3B8; }
-      footer { color: #64748B; font-size: 12px; margin-top: 22px; }
-    </style></head>
+      /* ── Website Health Check report theme (teal) ── */
+      :root {
+        --ink: #0F1E33; --body: #33415C; --muted: #64748B; --soft: #94A3B8;
+        --line: #E6EAF1; --line-strong: #C9D4E5; --bg: #ffffff; --bg-soft: #F5F7FA;
+        --accent: #0D8A7E; --accent-tint: #E6F4F2; --accent-line: #BFE3DE;
+        --good: #1F9D5B; --warn: #E3A11F; --bad: #D64541;
+      }
+      *, *::before, *::after { box-sizing: border-box; }
+      body { font-family: 'IBM Plex Sans', system-ui, Helvetica, Arial, sans-serif;
+             background: var(--bg-soft); color: var(--body); margin: 0; padding: 0 28px 40px;
+             line-height: 1.55; }
+      .wrap { max-width: 860px; margin: 0 auto; }
+      .brandbar { display: flex; align-items: center; gap: 14px; padding: 18px 0 16px;
+                  margin-bottom: 24px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+      .brandbar .logo { width: 30px; height: 30px; border-radius: 50%; flex: none;
+        background: conic-gradient(var(--good) 0 76%, var(--line) 76% 100%);
+        display: grid; place-items: center; }
+      .brandbar .logo::before { content: ''; width: 20px; height: 20px; border-radius: 50%;
+        background: var(--bg-soft); }
+      .brandbar .brandname { font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+        font-size: 17px; color: var(--ink); }
+      .brandbar .brandctx { color: var(--soft); font-size: 13px; }
+      .brandbar .sp { flex: 1; }
+      h1 { font-family: 'Space Grotesk', sans-serif; font-size: 1.6rem; margin: 6px 0 4px; color: var(--ink); }
+      .lead { font-size: 0.9rem; color: var(--muted); margin: 0 0 16px; max-width: 620px; }
+      .meta { font-size: 0.8rem; color: var(--muted); margin-bottom: 24px; }
+      .meta strong { color: var(--ink); }
+      .cards { display: flex; flex-wrap: wrap; gap: 12px; }
+      .card { background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
+              padding: 16px 22px; min-width: 168px;
+              box-shadow: 0 1px 2px rgba(15, 23, 42, .04); }
+      .card-label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase;
+                    letter-spacing: .06em; }
+      .card-score { font-family: 'Space Grotesk', sans-serif; font-size: 2.4rem; font-weight: 700;
+                    line-height: 1.1; margin: 4px 0; }
+      .card-score span { font-size: 1rem; color: var(--soft); font-weight: 400; }
+      .card-sub { font-size: 0.72rem; color: var(--soft); text-transform: uppercase; letter-spacing: .05em; }
+      .section-title { font-family: 'Space Grotesk', sans-serif; font-size: 0.8rem; font-weight: 700;
+                       color: var(--muted); text-transform: uppercase; letter-spacing: .1em;
+                       margin: 28px 0 10px; }
+      .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px;
+                    background: var(--bg); }
+      table { width: 100%; border-collapse: collapse; font-size: 0.82rem; color: var(--body); }
+      th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--line); }
+      tr:last-child td { border-bottom: 0; }
+      th { background: var(--bg-soft); color: var(--muted); font-weight: 600; font-size: 0.7rem;
+           text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+      td.signal { font-weight: 500; color: var(--ink); }
+      td.result { text-align: center; white-space: nowrap; }
+      td.pts { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--soft); }
+      td.detail { color: var(--muted); }
+      .ok { color: var(--good); font-weight: 600; }
+      .warn { color: var(--warn); font-weight: 600; }
+      tr:hover td { background: var(--accent-tint); }
+      footer { color: var(--soft); font-size: 12px; margin-top: 22px; }
+      @media print {
+        body { background: #ffffff; padding: 0 12px; }
+        .table-wrap { overflow: visible; }
+        tr:hover td { background: none; }
+      }
+    </style>
+    </head>
     <body><div class="wrap">
-      <h1>AI-Readiness report — {$host}</h1>
-      <p class="sub">How well generative search engines (ChatGPT, Perplexity, Google AI Overviews, Claude) can read this site.</p>
-      <div class="score"><b>{$score}</b><span>/ 100</span></div>
-      <table>
-        <tr><th>Signal</th><th style="text-align:center">Result</th><th style="text-align:right">Points</th><th>Detail</th></tr>
-        {$tbody}
-      </table>
+      <header class="brandbar">
+        <span class="logo"></span>
+        <span class="brandname">Website Health Check</span>
+        <span class="sp"></span>
+        <span class="brandctx">AI-Readiness report · powered by 2create</span>
+      </header>
+      <h1>AI-Readiness Report</h1>
+      <p class="lead">How well generative search engines (ChatGPT, Perplexity, Google AI Overviews, Claude) can read this site.</p>
+      <div class="meta">Site: <strong>{$host}</strong> &nbsp;|&nbsp; Generated: <strong>{$generated}</strong></div>
+      <div class="cards">
+        <div class="card">
+          <div class="card-label">AI-Readiness score</div>
+          <div class="card-score" style="color: {$scoreColor}">{$score}<span> / 100</span></div>
+          <div class="card-sub">{$gradeWord}</div>
+        </div>
+      </div>
+      <div class="section-title">Signals</div>
+      <div class="table-wrap">
+        <table>
+          <tr><th>Signal</th><th style="text-align:center">Result</th><th style="text-align:right">Points</th><th>Detail</th></tr>
+          {$tbody}
+        </table>
+      </div>
       <footer>Generated {$generated} · AI-Readiness Bulk Scanner v{$ver}</footer>
     </div></body></html>
     HTML;
