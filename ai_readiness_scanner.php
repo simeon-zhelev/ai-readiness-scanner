@@ -31,10 +31,11 @@
  *
  * Signals & points (sum to 100):
  *   AI crawler access   30   robots.txt allows GPTBot/ClaudeBot/PerplexityBot/…
- *   Structured data     25   JSON-LD (12) + meta description (5) + OG (4) + title (4)
- *   Server-rendered     20   main text present in raw HTML (no JS needed)
+ *   Structured data     20   JSON-LD (10) + meta description (4) + OG (3) + title (3)
+ *   Server-rendered     15   main text present in raw HTML (no JS needed)
  *   Semantic HTML       15   single <h1> (6) + <main>/<article> (5) + headings (4)
  *   Discoverability     10   sitemap (5) + llms.txt (5)
+ *   Performance (TTFB)  10   fast Time to First Byte for live AI retrieval
  *
  * MIT licensed. Plain PHP (curl, dom).
  */
@@ -59,11 +60,19 @@ const AI_BOTS = [
 /** Points per signal group (must sum to 100). */
 const POINTS = [
     'crawler_access' => 30,
-    'structured_data' => 25,  // 12 + 5 + 4 + 4
-    'rendered_content' => 20,
+    'structured_data' => 20,  // 10 + 4 + 3 + 3
+    'rendered_content' => 15,
     'semantic_html' => 15,    // 6 + 5 + 4
     'discoverability' => 10,  // 5 + 5
+    'performance' => 10,      // TTFB (Time to First Byte)
 ];
+
+// TTFB scoring band: full marks at/under FULL, zero at/over ZERO, linear between.
+// Live AI retrieval (Perplexity, browsing assistants) fetches under a tight
+// latency budget — a slow first byte can time out and drop you from the answer.
+const TTFB_FULL_MS = 500;
+const TTFB_ZERO_MS = 2000;
+const TTFB_PASS_MS = 800; // green ≤ this; "improve" above
 
 // ── Args ────────────────────────────────────────────────────────────────────
 function parse_args(): array
@@ -193,14 +202,15 @@ function absolute_url(string $base, string $location): string
  * GET with the given UA. Follows redirects manually, re-checking the target
  * host on every hop so a 3xx can't point the fetch at an internal address.
  *
- * @return array{body: ?string, status: int, blocked: bool}
+ * @return array{body: ?string, status: int, blocked: bool, ttfb: ?float}
+ *   ttfb is the final response's Time to First Byte in seconds (null if unfetched).
  */
 function http_get(string $url, array $args): array
 {
     $current = $url;
     for ($i = 0; $i <= $args['max-redirects']; $i++) {
         if ($args['guard-private'] && ! host_is_public(parse_url($current, PHP_URL_HOST))) {
-            return ['body' => null, 'status' => 0, 'blocked' => true];
+            return ['body' => null, 'status' => 0, 'blocked' => true, 'ttfb' => null];
         }
         $ch = curl_init($current);
         curl_setopt_array($ch, [
@@ -219,10 +229,11 @@ function http_get(string $url, array $args): array
         if ($resp === false) {
             curl_close($ch);
 
-            return ['body' => null, 'status' => 0, 'blocked' => false];
+            return ['body' => null, 'status' => 0, 'blocked' => false, 'ttfb' => null];
         }
         $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $ttfb = (float) curl_getinfo($ch, CURLINFO_STARTTRANSFER_TIME);
         $headers = substr($resp, 0, $headerSize);
         $body = substr($resp, $headerSize);
         curl_close($ch);
@@ -233,10 +244,40 @@ function http_get(string $url, array $args): array
             continue;
         }
 
-        return ['body' => $body, 'status' => $code, 'blocked' => false];
+        return ['body' => $body, 'status' => $code, 'blocked' => false, 'ttfb' => $ttfb];
     }
 
-    return ['body' => null, 'status' => 0, 'blocked' => false];
+    return ['body' => null, 'status' => 0, 'blocked' => false, 'ttfb' => null];
+}
+
+/**
+ * Median homepage TTFB in milliseconds over up to $samples fresh fetches.
+ * Seeded with the homepage sample already taken, so it only adds $samples-1
+ * requests. Breaks early if a fetch fails (don't hammer a struggling host).
+ * Returns 0 when nothing could be measured.
+ */
+function measure_ttfb(string $url, array $args, float $firstSample, int $samples = 3): int
+{
+    $vals = [];
+    if ($firstSample > 0) {
+        $vals[] = $firstSample;
+    }
+    while (count($vals) < $samples) {
+        $r = http_get($url, $args);
+        if (($r['ttfb'] ?? 0) > 0 && $r['status'] >= 200 && $r['status'] < 400) {
+            $vals[] = $r['ttfb'];
+        } else {
+            break;
+        }
+    }
+    if ($vals === []) {
+        return 0;
+    }
+    sort($vals);
+    $mid = intdiv(count($vals), 2);
+    $median = count($vals) % 2 === 1 ? $vals[$mid] : ($vals[$mid - 1] + $vals[$mid]) / 2;
+
+    return (int) round($median * 1000);
 }
 
 function base_url(string $url): string
@@ -330,6 +371,9 @@ function analyze(array $args): array
     }
     $html = $home['body'];
 
+    // Time to First Byte — median of a few homepage fetches (reuses $home's sample).
+    $ttfbMs = measure_ttfb($url, $args, $home['ttfb'] ?? 0.0);
+
     $robotsRes = http_get($base.'/robots.txt', $args);
     $robots = ($robotsRes['status'] >= 200 && $robotsRes['status'] < 300) ? (string) $robotsRes['body'] : '';
     $llms = http_get($base.'/llms.txt', $args);
@@ -363,6 +407,13 @@ function analyze(array $args): array
         || in_array(http_get($base.'/sitemap.xml', $args)['status'], range(200, 299), true)
         || in_array(http_get($base.'/sitemap_index.xml', $args)['status'], range(200, 299), true);
 
+    // 6. Performance — TTFB as a live-retrieval latency gate
+    $ttfbFraction = ($ttfbMs <= 0)
+        ? 0.0
+        : max(0.0, min(1.0, (TTFB_ZERO_MS - $ttfbMs) / (TTFB_ZERO_MS - TTFB_FULL_MS)));
+    $ttfbScore = (int) round(POINTS['performance'] * $ttfbFraction);
+    $ttfbPass = $ttfbMs > 0 && $ttfbMs <= TTFB_PASS_MS;
+
     $rows = [
         [
             'group' => 'crawler_access', 'key' => 'crawler_access', 'label' => 'AI crawler access',
@@ -373,23 +424,23 @@ function analyze(array $args): array
         ],
         [
             'group' => 'structured_data', 'key' => 'json_ld', 'label' => 'Structured data (schema.org)',
-            'score' => $hasJsonLd ? 12 : 0, 'max' => 12, 'pass' => $hasJsonLd,
+            'score' => $hasJsonLd ? 10 : 0, 'max' => 10, 'pass' => $hasJsonLd,
             'detail' => $hasJsonLd ? 'JSON-LD present' : 'No JSON-LD structured data found',
             'meta' => 'has_json_ld='.(int) $hasJsonLd,
         ],
         [
             'group' => 'structured_data', 'key' => 'meta_description', 'label' => 'Meta description',
-            'score' => $hasMetaDesc ? 5 : 0, 'max' => 5, 'pass' => $hasMetaDesc,
+            'score' => $hasMetaDesc ? 4 : 0, 'max' => 4, 'pass' => $hasMetaDesc,
             'detail' => $hasMetaDesc ? 'Present' : 'Missing', 'meta' => 'has_meta_description='.(int) $hasMetaDesc,
         ],
         [
             'group' => 'structured_data', 'key' => 'open_graph', 'label' => 'Open Graph tags',
-            'score' => $hasOg ? 4 : 0, 'max' => 4, 'pass' => $hasOg,
+            'score' => $hasOg ? 3 : 0, 'max' => 3, 'pass' => $hasOg,
             'detail' => $hasOg ? 'Present' : 'Missing', 'meta' => 'has_open_graph='.(int) $hasOg,
         ],
         [
             'group' => 'structured_data', 'key' => 'title', 'label' => 'Page title',
-            'score' => $hasTitle ? 4 : 0, 'max' => 4, 'pass' => $hasTitle,
+            'score' => $hasTitle ? 3 : 0, 'max' => 3, 'pass' => $hasTitle,
             'detail' => $hasTitle ? 'Present' : 'Missing', 'meta' => 'has_title='.(int) $hasTitle,
         ],
         [
@@ -425,6 +476,16 @@ function analyze(array $args): array
             'score' => $hasLlms ? 5 : 0, 'max' => 5, 'pass' => $hasLlms,
             'detail' => $hasLlms ? 'Present' : 'Not present (optional, emerging)',
             'meta' => 'has_llms_txt='.(int) $hasLlms,
+        ],
+        [
+            'group' => 'performance', 'key' => 'ttfb', 'label' => 'Time to First Byte',
+            'score' => $ttfbScore, 'max' => POINTS['performance'], 'pass' => $ttfbPass,
+            'detail' => match (true) {
+                $ttfbMs <= 0 => 'Could not measure server response time',
+                $ttfbPass => "Fast — server responded in {$ttfbMs}ms",
+                default => "Slow — server responded in {$ttfbMs}ms; live AI retrieval may time out",
+            },
+            'meta' => "ttfb_ms={$ttfbMs}",
         ],
     ];
 
