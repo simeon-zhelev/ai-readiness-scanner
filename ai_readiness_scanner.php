@@ -438,12 +438,13 @@ function analyze(array $args): array
 function write_csv(string $path, array $rows): void
 {
     $fh = fopen($path, 'w');
-    fputcsv($fh, ['group', 'key', 'label', 'status', 'score', 'max_score', 'detail', 'meta']);
+    // Explicit escape: PHP 8.4 deprecates omitting it (default is being removed).
+    fputcsv($fh, ['group', 'key', 'label', 'status', 'score', 'max_score', 'detail', 'meta'], escape: '\\');
     foreach ($rows as $r) {
         fputcsv($fh, [
             $r['group'], $r['key'], $r['label'], $r['pass'] ? 'pass' : 'improve',
             $r['score'], $r['max'], $r['detail'], $r['meta'],
-        ]);
+        ], escape: '\\');
     }
     fclose($fh);
 }
