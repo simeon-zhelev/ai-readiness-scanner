@@ -227,8 +227,6 @@ function http_get(string $url, array $args): array
         ]);
         $resp = curl_exec($ch);
         if ($resp === false) {
-            curl_close($ch);
-
             return ['body' => null, 'status' => 0, 'blocked' => false, 'ttfb' => null];
         }
         $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
@@ -236,7 +234,6 @@ function http_get(string $url, array $args): array
         $ttfb = (float) curl_getinfo($ch, CURLINFO_STARTTRANSFER_TIME);
         $headers = substr($resp, 0, $headerSize);
         $body = substr($resp, $headerSize);
-        curl_close($ch);
 
         if ($code >= 300 && $code < 400 && preg_match('/^location:\s*(.+)$/im', $headers, $m)) {
             $current = absolute_url($current, trim($m[1]));
