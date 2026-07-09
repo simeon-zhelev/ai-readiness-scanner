@@ -212,28 +212,46 @@ function http_get(string $url, array $args): array
         if ($args['guard-private'] && ! host_is_public(parse_url($current, PHP_URL_HOST))) {
             return ['body' => null, 'status' => 0, 'blocked' => true, 'ttfb' => null];
         }
-        $ch = curl_init($current);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_HEADER => true,
-            CURLOPT_TIMEOUT => $args['timeout'],
-            CURLOPT_CONNECTTIMEOUT => 10,
-            CURLOPT_USERAGENT => $args['user-agent'],
-            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            CURLOPT_SSL_VERIFYPEER => $args['verify-tls'],
-            CURLOPT_SSL_VERIFYHOST => $args['verify-tls'] ? 2 : 0,
-            CURLOPT_ENCODING => '',
-        ]);
-        $resp = curl_exec($ch);
-        if ($resp === false) {
-            return ['body' => null, 'status' => 0, 'blocked' => false, 'ttfb' => null];
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $ch = curl_init($current);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_HEADER => true,
+                CURLOPT_TIMEOUT => $args['timeout'],
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_USERAGENT => $args['user-agent'],
+                CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+                CURLOPT_SSL_VERIFYPEER => $args['verify-tls'],
+                CURLOPT_SSL_VERIFYHOST => $args['verify-tls'] ? 2 : 0,
+                CURLOPT_ENCODING => '',
+                CURLOPT_AUTOREFERER => true,
+                CURLOPT_HTTPHEADER => [
+                    'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language: en-US,en;q=0.9',
+                    'Cache-Control: no-cache',
+                    'Pragma: no-cache',
+                ],
+            ]);
+            $resp = curl_exec($ch);
+            if ($resp === false) {
+                return ['body' => null, 'status' => 0, 'blocked' => false, 'ttfb' => null];
+            }
+            $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $ttfb = (float) curl_getinfo($ch, CURLINFO_STARTTRANSFER_TIME);
+            $headers = substr($resp, 0, $headerSize);
+            $body = substr($resp, $headerSize);
+
+            if ($code !== 429 || $attempt === 2) {
+                break;
+            }
+
+            $delay = preg_match('/^retry-after:\s*(\d+)/im', $headers, $m)
+                ? min(5, max(1, (int) $m[1]))
+                : 0;
+            $delay > 0 ? sleep($delay) : usleep(500000 * ($attempt + 1));
         }
-        $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
-        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $ttfb = (float) curl_getinfo($ch, CURLINFO_STARTTRANSFER_TIME);
-        $headers = substr($resp, 0, $headerSize);
-        $body = substr($resp, $headerSize);
 
         if ($code >= 300 && $code < 400 && preg_match('/^location:\s*(.+)$/im', $headers, $m)) {
             $current = absolute_url($current, trim($m[1]));
